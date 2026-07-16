@@ -708,11 +708,22 @@ func (s *DataSourceService) ProcessSync(ctx context.Context, task *asynq.Task) e
 
 	for _, item := range items {
 		if item.IsDeleted {
-			if ds.SyncDeletions {
-				// Count only — actual KB deletion is intentionally not performed.
-				// Users manage knowledge removal explicitly via the KB UI to avoid
-				// accidental data loss from connector misdetection or reconfiguration.
-				result.Deleted++
+			if ds.SyncDeletions && item.ExternalID != "" {
+				// Find and delete the corresponding knowledge entry
+				repo := s.knowledgeService.GetRepository()
+				existing, findErr := repo.FindByMetadataKey(ctx, ds.TenantID, ds.KnowledgeBaseID, "external_id", item.ExternalID)
+				if findErr != nil {
+					logger.Warnf(ctx, "failed to find knowledge for deleted external_id=%s: %v", item.ExternalID, findErr)
+				} else if existing != nil {
+					if delErr := s.knowledgeService.DeleteKnowledge(ctx, existing.ID); delErr != nil {
+						logger.Warnf(ctx, "failed to delete knowledge %s for external_id=%s: %v", existing.ID, item.ExternalID, delErr)
+					} else {
+						logger.Infof(ctx, "deleted knowledge %s for external_id=%s (source deletion)", existing.ID, item.ExternalID)
+						result.Deleted++
+					}
+				} else {
+					logger.Debugf(ctx, "no knowledge found for deleted external_id=%s, skipping", item.ExternalID)
+				}
 			}
 			continue
 		}

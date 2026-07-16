@@ -405,6 +405,19 @@ const connectorDefs = computed<ConnectorDef[]>(() => [
       { key: 'auth_headers', labelKey: 'datasource.field.authHeaders', placeholder: '', optional: true, hintKey: 'datasource.field.authHeadersHint', fieldType: 'custom_headers' },
     ],
   },
+  {
+    type: 'confluence',
+    available: true,
+    docUrl: '',
+    permissionDocUrl: '',
+    permissionPageUrl: '',
+    requiredPermissions: [],
+    fields: [
+      { key: 'base_url', labelKey: 'datasource.field.confluenceBaseUrl', placeholder: 'https://confluence.example.com' },
+      { key: 'username', labelKey: 'datasource.field.confluenceUsername', placeholder: '' },
+      { key: 'password', labelKey: 'datasource.field.confluencePassword', placeholder: '', secret: true },
+    ],
+  },
 ])
 
 
@@ -900,6 +913,7 @@ const resourceTypeLabelMap: Record<string, string> = {
   wiki_space: 'datasource.resourceType.wikiSpace',
   doc_category: 'datasource.resourceType.docCategory',
   book: 'datasource.resourceType.book',
+  confluence_space: 'datasource.resourceType.confluenceSpace',
 }
 
 function resourceTypeLabel(type: string): string {
@@ -1890,6 +1904,10 @@ const drawerConfirmText = computed(() => {
 
 .footer-test-message.error {
   color: var(--td-error-color);
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
+  word-break: break-all;
 }
 
 /* --- Step 2: resource picker (compact flat tree, matches KB selector) --- */
