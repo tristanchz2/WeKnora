@@ -167,9 +167,10 @@ func (s *DataSourceService) UpdateDataSource(ctx context.Context, ds *types.Data
 	// regardless of what the body says. Log a warning if a stale caller
 	// passes one so we can spot them and migrate later. Non-credential
 	// fields of Config (Type / ResourceIDs / Settings) flow through.
-	var mergedCfg, existingParsedCfg *types.DataSourceConfig
+	var mergedCfg, existingParsedCfg, incomingCfg *types.DataSourceConfig
 	if len(ds.Config) > 0 {
-		incomingCfg, parseIncErr := ds.ParseConfig()
+		var parseIncErr error
+		incomingCfg, parseIncErr = ds.ParseConfig()
 		existingCfg, parseExErr := existing.ParseConfig()
 		if parseIncErr == nil && parseExErr == nil && incomingCfg != nil {
 			if incomingCfg.HasCredentials() {
@@ -196,12 +197,19 @@ func (s *DataSourceService) UpdateDataSource(ctx context.Context, ds *types.Data
 	// when there are no stored credentials yet (validators would fail with
 	// no token to call the live API) and when the parsed config is
 	// structurally identical.
+	//
+	// IMPORTANT: only validate when the INCOMING config carries real
+	// credentials.  When the caller passes empty credentials (as the
+	// frontend does in edit mode), the stored credentials are preserved
+	// but might be stale/corrupted (e.g. AES key rotation).  Validating
+	// those would produce confusing "missing base_url" errors even though
+	// the user only changed a non-credential setting.
 	configActuallyChanged := true
 	if mergedCfg != nil && existingParsedCfg != nil {
 		configActuallyChanged = !reflect.DeepEqual(*mergedCfg, *existingParsedCfg)
 	}
-	hasCreds := mergedCfg != nil && mergedCfg.HasConfiguredCredentials(ds.Type)
-	if hasCreds && (ds.Type != existing.Type || configActuallyChanged) {
+	incomingHasCreds := incomingCfg != nil && incomingCfg.HasConfiguredCredentials(ds.Type)
+	if incomingHasCreds && (ds.Type != existing.Type || configActuallyChanged) {
 		if err := s.validateDataSourceConfig(ctx, ds); err != nil {
 			return nil, err
 		}
@@ -243,7 +251,19 @@ func (s *DataSourceService) UpdateDataSourceCredentials(
 	if parsed == nil {
 		parsed = &types.DataSourceConfig{Type: existing.Type}
 	}
-	parsed.Credentials = credentials
+	// Merge incoming credentials with stored ones.  The frontend's
+	// "replace credentials" flow only sends the fields the user
+	// re-entered (e.g. a new api_token).  Non-secret fields like
+	// base_url and username are preserved from the stored config so
+	// the user doesn't have to re-type them.
+	mergedCreds := make(map[string]interface{})
+	for k, v := range parsed.Credentials {
+		mergedCreds[k] = v
+	}
+	for k, v := range credentials {
+		mergedCreds[k] = v
+	}
+	parsed.Credentials = mergedCreds
 	parsed.StripNonSecretCredentials(existing.Type)
 	blob, err := parsed.ToJSON()
 	if err != nil {
@@ -856,19 +876,81 @@ func allFetchedItemsFailedError(result *types.SyncResult) error {
 }
 
 // ValidateCredentials tests connectivity using raw credentials without persisting anything.
-func (s *DataSourceService) ValidateCredentials(ctx context.Context, connectorType string, credentials map[string]interface{}) error {
+// When existingDSID is non-empty the incoming credentials are merged with the
+// stored credential map so the caller only needs to supply the fields that
+// changed (e.g. a new api_token) while non-secret fields like base_url are
+// preserved from the existing row.
+func (s *DataSourceService) ValidateCredentials(ctx context.Context, connectorType string, credentials map[string]interface{}, existingDSID string) error {
 	connector, err := s.connectorRegistry.Get(connectorType)
 	if err != nil {
 		return err
 	}
 
+	merged := credentials
+	credMerged := false // tracks whether we actually merged with stored creds
+	if existingDSID != "" {
+		existing, err := s.dsRepo.FindByID(ctx, existingDSID)
+		if err != nil {
+			return fmt.Errorf("load existing data source for credential merge: %w", err)
+		}
+		parsed, err := existing.ParseConfig()
+		if err != nil {
+			return fmt.Errorf("parse existing config for credential merge: %w", err)
+		}
+		if parsed != nil && len(parsed.Credentials) > 0 {
+			merged = make(map[string]interface{})
+			// Copy stored credentials, but skip empty strings
+			// (which result from failed decryption).  This ensures
+			// that incoming non-empty values always fill in gaps
+			// left by corrupted stored entries.
+			for k, v := range parsed.Credentials {
+				if s, ok := v.(string); ok && s == "" {
+					continue // skip corrupted/empty stored value
+				}
+				merged[k] = v
+			}
+			// Overlay incoming credentials (always win)
+			for k, v := range credentials {
+				merged[k] = v
+			}
+			credMerged = true
+		}
+	}
+
 	config := &types.DataSourceConfig{
 		Type:        connectorType,
-		Credentials: credentials,
+		Credentials: merged,
 	}
 
 	if err := connector.Validate(ctx, config); err != nil {
 		return err
+	}
+
+	// When merging with an existing row, persist the merged credentials
+	// back to the DB so that any previously incomplete/corrupted stored
+	// credentials are repaired.  We re-read the row, build a fresh
+	// DataSourceConfig with the merged (plain-text) credentials, and
+	// let ToJSON() re-encrypt them before saving.
+	if existingDSID != "" && credMerged {
+		existing, err := s.dsRepo.FindByID(ctx, existingDSID)
+		if err == nil {
+			// Build a minimal config with merged credentials and
+			// let ToJSON handle encryption.
+			repairCfg := &types.DataSourceConfig{
+				Type:        connectorType,
+				Credentials: merged,
+			}
+			// Preserve existing non-credential config fields
+			if parsed, pErr := existing.ParseConfig(); pErr == nil && parsed != nil {
+				repairCfg.ResourceIDs = parsed.ResourceIDs
+				repairCfg.Settings = parsed.Settings
+			}
+			if blob, bErr := repairCfg.ToJSON(); bErr == nil {
+				existing.Config = blob
+				_ = s.dsRepo.Update(ctx, existing)
+				logger.Infof(ctx, "[datasource] repaired credentials for ds=%s", existingDSID)
+			}
+		}
 	}
 
 	return nil

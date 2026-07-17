@@ -247,11 +247,27 @@ func (c *Connector) walk(
 
 
 
-// fetchPageAsPDF exports a single Confluence page as PDF and returns a FetchedItem.
+// fetchPageAsPDF exports a single Confluence page.
+// For Server edition: uses the native PDFpageexport action.
+// For Cloud edition: fetches body.storage HTML as a fallback (Cloud does not
+// expose the legacy PDF export endpoint).
 func (c *Connector) fetchPageAsPDF(
 	ctx context.Context, client *Client, cfg *Config, page confluencePage, sourceResourceID string,
 ) (*types.FetchedItem, error) {
-	pdfData, filename, err := client.ExportPageAsPDF(ctx, page.ID, page.Title)
+	var (
+		data     []byte
+		filename string
+		err      error
+		contentType string
+	)
+
+	if cfg.IsCloud() {
+		data, filename, err = client.ExportPageAsHTML(ctx, page.ID, page.Title)
+		contentType = "text/html"
+	} else {
+		data, filename, err = client.ExportPageAsPDF(ctx, page.ID, page.Title)
+		contentType = "application/pdf"
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -262,8 +278,8 @@ func (c *Connector) fetchPageAsPDF(
 	return &types.FetchedItem{
 		ExternalID:       page.ID,
 		Title:            page.Title,
-		Content:          pdfData,
-		ContentType:      "application/pdf",
+		Content:          data,
+		ContentType:      contentType,
 		FileName:         filename,
 		URL:              baseURL + page.Links.WebUI,
 		UpdatedAt:        modifiedAt,

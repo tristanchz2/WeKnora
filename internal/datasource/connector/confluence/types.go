@@ -25,16 +25,32 @@ import (
 )
 
 // Config holds Confluence-specific configuration for the data source connector.
-// Uses Basic Auth (username + password) which is standard for Confluence 7.x Server.
 type Config struct {
-	// Base URL of the Confluence instance (e.g. "https://confluence.example.com")
+	// Edition distinguishes Confluence Server / Data Center ("server") from
+	// Confluence Cloud ("cloud").  Defaults to "server" when empty so that
+	// existing rows created before this field remain compatible.
+	Edition string `json:"edition"`
+
+	// Base URL of the Confluence instance (e.g. "https://confluence.example.com"
+	// for Server, "https://your-domain.atlassian.net/wiki" for Cloud)
 	BaseURL string `json:"base_url"`
 
-	// Username for Basic Auth
+	// Username for authentication.
+	// Server: username for Basic Auth.
+	// Cloud:  email address for Basic Auth.
 	Username string `json:"username"`
 
-	// Password for Basic Auth
+	// Password for Server edition (Basic Auth password).
 	Password string `json:"password"`
+
+	// APIToken for Cloud edition (Atlassian API token, used as password in
+	// Basic Auth together with the email).
+	APIToken string `json:"api_token"`
+}
+
+// IsCloud reports whether this config targets Confluence Cloud.
+func (c *Config) IsCloud() bool {
+	return c.Edition == "cloud"
 }
 
 // parseConfluenceConfig extracts and validates Confluence config from DataSourceConfig.
@@ -44,6 +60,11 @@ func parseConfluenceConfig(config *types.DataSourceConfig) (*Config, error) {
 	}
 
 	creds := config.Credentials
+
+	edition, _ := creds["edition"].(string)
+	if edition == "" {
+		edition = "server"
+	}
 
 	baseURL, _ := creds["base_url"].(string)
 	if baseURL == "" {
@@ -55,21 +76,34 @@ func parseConfluenceConfig(config *types.DataSourceConfig) (*Config, error) {
 		return nil, fmt.Errorf("%w: missing username", datasource.ErrInvalidCredentials)
 	}
 
-	password, _ := creds["password"].(string)
-	if password == "" {
-		return nil, fmt.Errorf("%w: missing password", datasource.ErrInvalidCredentials)
-	}
-
-	return &Config{
+	cfg := &Config{
+		Edition:  edition,
 		BaseURL:  baseURL,
 		Username: username,
-		Password: password,
-	}, nil
+	}
+
+	switch edition {
+	case "cloud":
+		apiToken, _ := creds["api_token"].(string)
+		if apiToken == "" {
+			return nil, fmt.Errorf("%w: missing api_token", datasource.ErrInvalidCredentials)
+		}
+		cfg.APIToken = apiToken
+	default: // "server"
+		password, _ := creds["password"].(string)
+		if password == "" {
+			return nil, fmt.Errorf("%w: missing password", datasource.ErrInvalidCredentials)
+		}
+		cfg.Password = password
+	}
+
+	return cfg, nil
 }
 
 // --- API response types ---
 
-// confluenceSpace represents a Confluence space from GET /rest/api/space.
+// confluenceSpace represents a Confluence space from GET /rest/api/space (v1).
+// Used by Server / Data Center edition.
 type confluenceSpace struct {
 	ID          int    `json:"id"`
 	Key         string `json:"key"`
@@ -89,12 +123,39 @@ type confluenceSpace struct {
 	} `json:"_links"`
 }
 
-// confluenceSpaceListResponse is the response from GET /rest/api/space.
+// confluenceSpaceListResponse is the response from GET /rest/api/space (v1).
 type confluenceSpaceListResponse struct {
 	Results []confluenceSpace `json:"results"`
 	Start   int               `json:"start"`
 	Limit   int               `json:"limit"`
 	Size    int               `json:"size"`
+	Links   struct {
+		Next string `json:"next"`
+	} `json:"_links"`
+}
+
+// confluenceSpaceV2 represents a Confluence space from GET /api/v2/spaces.
+// Used by Cloud edition. Key difference: ID is a string, not int.
+type confluenceSpaceV2 struct {
+	ID          string `json:"id"`
+	Key         string `json:"key"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Status      string `json:"status"`
+	AuthorID    string `json:"authorId"`
+	CreatedAt   string `json:"createdAt"`
+	HomepageID  string `json:"homepageId"`
+	Description string `json:"description"`
+	Links       struct {
+		WebUI string `json:"webui"`
+		Self  string `json:"self"`
+	} `json:"_links"`
+}
+
+// confluenceSpaceV2ListResponse is the response from GET /api/v2/spaces.
+// Uses cursor-based pagination.
+type confluenceSpaceV2ListResponse struct {
+	Results []confluenceSpaceV2 `json:"results"`
 	Links   struct {
 		Next string `json:"next"`
 	} `json:"_links"`
@@ -134,6 +195,34 @@ type confluenceContentListResponse struct {
 	Size    int              `json:"size"`
 	Links   struct {
 		Next string `json:"next"`
+	} `json:"_links"`
+}
+
+// confluencePageWithBody extends the basic page type with body.storage for
+// HTML export (used by Cloud edition where PDF export is unavailable).
+type confluencePageWithBody struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Type  string `json:"type"`
+	Body  struct {
+		Storage struct {
+			Value string `json:"value"`
+		} `json:"storage"`
+	} `json:"body"`
+	Version struct {
+		By struct {
+			DisplayName string `json:"displayName"`
+		} `json:"by"`
+		When string `json:"when"`
+	} `json:"version"`
+	Space struct {
+		ID   int    `json:"id"`
+		Key  string `json:"key"`
+		Name string `json:"name"`
+	} `json:"space"`
+	Links struct {
+		WebUI string `json:"webui"`
+		Self  string `json:"self"`
 	} `json:"_links"`
 }
 

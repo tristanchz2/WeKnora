@@ -477,8 +477,8 @@ func (d *DataSource) ParseConfig() (*DataSourceConfig, error) {
 		// false; the UI surfaces "credential not configured" and the
 		// user can re-enter without losing the rest of the data source.
 		log.Printf(
-			"[crypto] datasource credential %q: decrypt failed (SYSTEM_AES_KEY missing/rotated?), treating as unconfigured",
-			k,
+			"[crypto] datasource credential %q: decrypt failed (SYSTEM_AES_KEY missing/rotated?), treating as unconfigured. raw_value_prefix=%s",
+			k, truncateForLog(s, 20),
 		)
 		config.Credentials[k] = ""
 	}
@@ -519,4 +519,12 @@ func (s *SyncLog) ParseResult() (*SyncResult, error) {
 		return nil, err
 	}
 	return &result, nil
+}
+
+// truncateForLog shortens a string for safe logging.
+func truncateForLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
