@@ -327,38 +327,11 @@ func (c *Client) ExportPageAsPDF(ctx context.Context, pageID string, pageTitle s
 	return data, filename, nil
 }
 
-// ExportPageAsHTML fetches a Confluence page's body in storage (XHTML) format
-// and wraps it in a minimal HTML document.  Used for Confluence Cloud where the
-// legacy PDF export endpoint is unavailable.
-func (c *Client) ExportPageAsHTML(ctx context.Context, pageID string, pageTitle string) ([]byte, string, error) {
-	path := fmt.Sprintf("/rest/api/content/%s?expand=body.storage,version,space", pageID)
-
-	var page confluencePageWithBody
-	_, err := c.doRequest(ctx, http.MethodGet, path, &page)
-	if err != nil {
-		return nil, "", fmt.Errorf("fetch page %s HTML: %w", pageID, err)
-	}
-
-	bodyHTML := page.Body.Storage.Value
-	if bodyHTML == "" {
-		return nil, "", fmt.Errorf("page %s: empty body.storage", pageID)
-	}
-
-	// Wrap in a full HTML document so downstream parsers can handle it.
-	doc := fmt.Sprintf(`<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><title>%s</title></head>
-<body>
-%s
-</body>
-</html>`, pageTitle, bodyHTML)
-
-	filename := safeFilename(pageTitle) + ".html"
-
-	logger.Infof(ctx, "[Confluence] exported page %s (%s) as HTML: %d bytes",
-		pageID, pageTitle, len(doc))
-
-	return []byte(doc), filename, nil
+// ExportPageAsPDFViaExportView fetches a Confluence Cloud page's body.export_view
+// HTML, inlines images, and renders the result to PDF via headless Chrome.
+// Used for Cloud edition where the legacy PDF export endpoint is unavailable.
+func (c *Client) ExportPageAsPDFViaExportView(ctx context.Context, pageID string, pageTitle string) ([]byte, string, error) {
+	return exportViewPageToPDF(ctx, c, pageID, pageTitle)
 }
 
 // truncate shortens a string to maxLen, appending "..." if truncated.

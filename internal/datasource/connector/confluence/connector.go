@@ -248,22 +248,23 @@ func (c *Connector) walk(
 
 
 // fetchPageAsPDF exports a single Confluence page.
-// For Server edition: uses the native PDFpageexport action.
-// For Cloud edition: fetches body.storage HTML as a fallback (Cloud does not
-// expose the legacy PDF export endpoint).
+// For Server edition: uses the native PDF export action.
+// For Cloud edition: fetches body.export_view HTML, inlines images, and
+// renders to PDF via headless Chrome (Cloud does not expose the legacy
+// PDF export endpoint).
 func (c *Connector) fetchPageAsPDF(
 	ctx context.Context, client *Client, cfg *Config, page confluencePage, sourceResourceID string,
 ) (*types.FetchedItem, error) {
 	var (
-		data     []byte
-		filename string
-		err      error
+		data        []byte
+		filename    string
+		err         error
 		contentType string
 	)
 
 	if cfg.IsCloud() {
-		data, filename, err = client.ExportPageAsHTML(ctx, page.ID, page.Title)
-		contentType = "text/html"
+		data, filename, err = client.ExportPageAsPDFViaExportView(ctx, page.ID, page.Title)
+		contentType = "application/pdf"
 	} else {
 		data, filename, err = client.ExportPageAsPDF(ctx, page.ID, page.Title)
 		contentType = "application/pdf"

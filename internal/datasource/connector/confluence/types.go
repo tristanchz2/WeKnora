@@ -198,16 +198,18 @@ type confluenceContentListResponse struct {
 	} `json:"_links"`
 }
 
-// confluencePageWithBody extends the basic page type with body.storage for
-// HTML export (used by Cloud edition where PDF export is unavailable).
-type confluencePageWithBody struct {
+// confluencePageWithExportView extends the basic page type with body.export_view
+// for PDF rendering (used by Cloud edition where the legacy PDF export endpoint
+// is unavailable).  The export_view body contains cleaner HTML than body.storage.
+type confluencePageWithExportView struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
 	Type  string `json:"type"`
 	Body  struct {
-		Storage struct {
-			Value string `json:"value"`
-		} `json:"storage"`
+		ExportView struct {
+			Value          string `json:"value"`
+			Representation string `json:"representation"`
+		} `json:"export_view"`
 	} `json:"body"`
 	Version struct {
 		By struct {
@@ -224,6 +226,19 @@ type confluencePageWithBody struct {
 		WebUI string `json:"webui"`
 		Self  string `json:"self"`
 	} `json:"_links"`
+}
+
+// confluenceAttachmentResponse is the response from
+// GET /rest/api/content/{id}/child/attachment.
+type confluenceAttachmentResponse struct {
+	Results []confluenceAttachment `json:"results"`
+	Size    int                    `json:"size"`
+}
+
+// confluenceAttachment represents a single attachment on a Confluence page.
+type confluenceAttachment struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
 }
 
 // confluenceSearchResponse is the response from GET /rest/api/content/search.
