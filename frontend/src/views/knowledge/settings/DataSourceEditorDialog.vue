@@ -552,13 +552,20 @@ async function testConnection() {
   testResult.value = ''
   testErrorMsg.value = ''
   try {
-    if (isEdit.value && tempDsId.value) {
+    if (isEdit.value && tempDsId.value && !replaceCredentialsMode.value) {
+      // Edit mode without credential replacement: test using the stored
+      // credentials (which the backend reads from DB).  The update call
+      // persists any non-credential config changes (resource_ids, settings)
+      // so that validateConnection sees the latest state.
       await updateDataSource(tempDsId.value, {
         ...form.value,
         knowledge_base_id: props.kbId,
       } as any)
       await validateConnection(tempDsId.value)
     } else {
+      // Create mode OR edit mode with credential replacement:
+      // Use the stateless validate-credentials endpoint so we test the
+      // NEW values the user just typed, not the stale DB row.
       const creds = { ...form.value.config.credentials }
       if (form.value.type === 'rss') {
         // validate-credentials is credentials-only; feed URLs live in settings.
