@@ -160,6 +160,16 @@ func (c *Connector) walk(
 
 	var out []types.FetchedItem
 
+	// Fetch space list once and build a lookup map to avoid repeated API calls.
+	spaces, err := client.ListSpaces(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list spaces: %w", err)
+	}
+	spaceMap := make(map[string]*confluenceSpace, len(spaces))
+	for i := range spaces {
+		spaceMap[spaces[i].ID] = &spaces[i]
+	}
+
 	for _, resourceID := range resourceIDs {
 		prefix, id := parseResourceID(resourceID)
 		if prefix != "s" {
@@ -167,16 +177,25 @@ func (c *Connector) walk(
 			continue
 		}
 
-		// Look up the space to get its key
-		space, err := c.getSpaceByID(ctx, client, id)
-		if err != nil {
-			return nil, nil, fmt.Errorf("get space %s: %w", id, err)
+		// Look up the space from the cached map
+		space, ok := spaceMap[id]
+		if !ok {
+			logger.Warnf(ctx, "[Confluence] space %s not found, skipping (may have been deleted)", id)
+			continue
 		}
 
-		// List all pages in this space via CQL
-		pages, err := client.GetAllPagesInSpace(ctx, space.Key)
+		// List all pages in this space
+		var pages []confluencePage
+		if cfg.IsCloud() {
+			// Cloud: use v2 API to list pages (v1 CQL search may not work on Cloud)
+			pages, err = client.GetAllPagesInSpaceV2(ctx, space.ID, space.Key, space.Name)
+		} else {
+			// Server / DC: use v1 CQL search
+			pages, err = client.GetAllPagesInSpace(ctx, space.Key)
+		}
 		if err != nil {
-			return nil, nil, fmt.Errorf("list pages in space %s: %w", space.Key, err)
+			logger.Warnf(ctx, "[Confluence] failed to list pages in space %s: %v", space.Key, err)
+			continue
 		}
 
 		currentPages := make(map[string]bool)
@@ -293,24 +312,6 @@ func (c *Connector) fetchPageAsPDF(
 			"creator":    page.Version.By.DisplayName,
 		},
 	}, nil
-}
-
-// getSpaceByID looks up a space by its numeric ID.
-// Confluence 7.x doesn't have a direct "get space by ID" endpoint,
-// so we list all spaces and find the matching one.
-func (c *Connector) getSpaceByID(ctx context.Context, client *Client, spaceID string) (*confluenceSpace, error) {
-	spaces, err := client.ListSpaces(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, space := range spaces {
-		if fmt.Sprintf("%d", space.ID) == spaceID {
-			return &space, nil
-		}
-	}
-
-	return nil, fmt.Errorf("space with ID %s not found", spaceID)
 }
 
 // --- Resource ID helpers ---

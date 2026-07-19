@@ -104,8 +104,10 @@ func parseConfluenceConfig(config *types.DataSourceConfig) (*Config, error) {
 
 // confluenceSpace represents a Confluence space from GET /rest/api/space (v1).
 // Used by Server / Data Center edition.
+// confluenceSpace represents a Confluence space.
+// ID is stored as a string to accommodate both Server (numeric) and Cloud (string) formats.
 type confluenceSpace struct {
-	ID          int    `json:"id"`
+	ID          string `json:"-"` // set programmatically; v1 API returns int, converted to string
 	Key         string `json:"key"`
 	Name        string `json:"name"`
 	Type        string `json:"type"`
@@ -124,13 +126,35 @@ type confluenceSpace struct {
 }
 
 // confluenceSpaceListResponse is the response from GET /rest/api/space (v1).
+// The v1 API returns space IDs as integers, so we use a dedicated raw type
+// and convert to the common confluenceSpace (string ID) in listSpacesV1.
 type confluenceSpaceListResponse struct {
-	Results []confluenceSpace `json:"results"`
-	Start   int               `json:"start"`
-	Limit   int               `json:"limit"`
-	Size    int               `json:"size"`
+	Results []confluenceSpaceV1 `json:"results"`
+	Start   int                 `json:"start"`
+	Limit   int                 `json:"limit"`
+	Size    int                 `json:"size"`
 	Links   struct {
 		Next string `json:"next"`
+	} `json:"_links"`
+}
+
+// confluenceSpaceV1 is the raw space type from the v1 API where ID is an integer.
+type confluenceSpaceV1 struct {
+	ID          int    `json:"id"`
+	Key         string `json:"key"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Homepage    struct {
+		ID int `json:"id"` // v1 API returns integer
+	} `json:"homepage"`
+	Description struct {
+		View struct {
+			Value string `json:"value"`
+		} `json:"view"`
+	} `json:"description"`
+	Links struct {
+		WebUI string `json:"webui"`
+		Self  string `json:"self"`
 	} `json:"_links"`
 }
 
@@ -241,6 +265,33 @@ type confluenceAttachment struct {
 	Title string `json:"title"`
 }
 
+// confluencePageV2 represents a page from the Cloud v2 API
+// (GET /api/v2/spaces/{id}/pages). Lighter than v1 confluencePage:
+// no space/version/ancestors — version is fetched separately via GetPage.
+type confluencePageV2 struct {
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	Title     string `json:"title"`
+	SpaceID   string `json:"spaceId"`
+	CreatedAt string `json:"createdAt"`
+	Version   struct {
+		Number    int    `json:"number"`
+		CreatedAt string `json:"createdAt"`
+	} `json:"version"`
+	Links struct {
+		WebUI string `json:"webui"`
+	} `json:"_links"`
+}
+
+// confluencePageV2ListResponse is the paginated response from
+// GET /api/v2/spaces/{id}/pages (Cloud, cursor-based).
+type confluencePageV2ListResponse struct {
+	Results []confluencePageV2 `json:"results"`
+	Links   struct {
+		Next string `json:"next"`
+	} `json:"_links"`
+}
+
 // confluenceSearchResponse is the response from GET /rest/api/content/search.
 type confluenceSearchResponse struct {
 	Results []confluencePage `json:"results"`
@@ -323,7 +374,7 @@ func safeFilename(name string) string {
 // no page-level expansion is needed — we sync the entire space.
 func spaceToResource(space confluenceSpace, baseURL string) types.Resource {
 	return types.Resource{
-		ExternalID:  fmt.Sprintf("%d", space.ID),
+		ExternalID:  space.ID,
 		Name:        space.Name,
 		Type:        "space",
 		URL:         baseURL + space.Links.WebUI,

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,8 +59,10 @@ func (c *Client) Ping(ctx context.Context) error {
 
 // doRequest performs an authenticated HTTP request to the Confluence API.
 func (c *Client) doRequest(ctx context.Context, method, path string, result interface{}) ([]byte, error) {
-	fullURL := c.baseURL + path
-	if !strings.HasPrefix(path, "http") {
+	var fullURL string
+	if strings.HasPrefix(path, "http") {
+		fullURL = path
+	} else {
 		fullURL = c.baseURL + path
 	}
 
@@ -159,7 +162,22 @@ func (c *Client) listSpacesV1(ctx context.Context) ([]confluenceSpace, error) {
 			return nil, fmt.Errorf("list spaces v1 (start=%d): %w", start, err)
 		}
 
-		allSpaces = append(allSpaces, resp.Results...)
+		// Convert v1 int IDs to the common string ID format.
+		for _, v1 := range resp.Results {
+			allSpaces = append(allSpaces, confluenceSpace{
+				ID:   strconv.Itoa(v1.ID),
+				Key:  v1.Key,
+				Name: v1.Name,
+				Type: v1.Type,
+				Homepage: struct {
+					ID string `json:"id"`
+				}{
+					ID: strconv.Itoa(v1.Homepage.ID),
+				},
+				Description: v1.Description,
+				Links:       v1.Links,
+			})
+		}
 
 		if resp.Links.Next == "" || len(resp.Results) < limit {
 			break
@@ -192,10 +210,8 @@ func (c *Client) listSpacesV2(ctx context.Context) ([]confluenceSpace, error) {
 
 		// Convert v2 spaces to the common confluenceSpace type
 		for _, v2 := range resp.Results {
-			id := 0
-			fmt.Sscanf(v2.ID, "%d", &id)
 			allSpaces = append(allSpaces, confluenceSpace{
-				ID:   id,
+				ID:   v2.ID,
 				Key:  v2.Key,
 				Name: v2.Name,
 				Type: v2.Type,
@@ -241,9 +257,9 @@ func (c *Client) GetPage(ctx context.Context, pageID string) (*confluencePage, e
 	return &page, nil
 }
 
-// GetAllPagesInSpace returns ALL current pages in a space using CQL,
-// without requiring recursive parent→child traversal.
-// This mirrors the working Python approach: type=page AND space=xxx.
+// GetAllPagesInSpace returns ALL current pages in a space using CQL (v1 API).
+// Used by Server / Data Center edition.
+// For Cloud, use GetAllPagesInSpaceV2 instead.
 func (c *Client) GetAllPagesInSpace(ctx context.Context, spaceKey string) ([]confluencePage, error) {
 	var allPages []confluencePage
 	start := 0
@@ -266,6 +282,84 @@ func (c *Client) GetAllPagesInSpace(ctx context.Context, spaceKey string) ([]con
 			break
 		}
 		start += len(resp.Results)
+	}
+
+	return allPages, nil
+}
+
+// GetAllPagesInSpaceV2 lists all current pages in a space using the Cloud v2 API
+// (GET /api/v2/spaces/{spaceId}/pages). The v2 response already includes
+// version info, so no additional GetPage calls are needed.
+func (c *Client) GetAllPagesInSpaceV2(ctx context.Context, spaceID, spaceKey, spaceName string) ([]confluencePage, error) {
+	var allPages []confluencePage
+	cursor := ""
+	limit := 25
+
+	// Parse spaceID to int for confluencePage.Space.ID
+	spaceIDInt, _ := strconv.Atoi(spaceID)
+
+	for {
+		path := fmt.Sprintf("/api/v2/spaces/%s/pages?limit=%d&status=current", spaceID, limit)
+		if cursor != "" {
+			path += "&cursor=" + cursor
+		}
+
+		var resp confluencePageV2ListResponse
+		_, err := c.doRequest(ctx, http.MethodGet, path, &resp)
+		if err != nil {
+			return nil, fmt.Errorf("list v2 pages in space %s: %w", spaceID, err)
+		}
+
+		for _, p := range resp.Results {
+			// Use version.createdAt as the change timestamp (v2 doesn't have version.when)
+			versionWhen := p.Version.CreatedAt
+			if versionWhen == "" {
+				versionWhen = p.CreatedAt
+			}
+			allPages = append(allPages, confluencePage{
+				ID:     p.ID,
+				Title:  p.Title,
+				Type:   "page",
+				Status: p.Status,
+				Space: struct {
+					ID   int    `json:"id"`
+					Key  string `json:"key"`
+					Name string `json:"name"`
+				}{
+					ID:   spaceIDInt,
+					Key:  spaceKey,
+					Name: spaceName,
+				},
+				Version: struct {
+					By struct {
+						DisplayName string `json:"displayName"`
+					} `json:"by"`
+					When string `json:"when"`
+				}{
+					When: versionWhen,
+				},
+				Links: struct {
+					WebUI string `json:"webui"`
+					Self  string `json:"self"`
+				}{
+					WebUI: p.Links.WebUI,
+				},
+			})
+		}
+
+		if resp.Links.Next == "" || len(resp.Results) < limit {
+			break
+		}
+		// Extract cursor from next link
+		nextLink := resp.Links.Next
+		if idx := strings.Index(nextLink, "cursor="); idx >= 0 {
+			cursor = nextLink[idx+7:]
+			if end := strings.Index(cursor, "&"); end >= 0 {
+				cursor = cursor[:end]
+			}
+		} else {
+			break
+		}
 	}
 
 	return allPages, nil
@@ -313,7 +407,7 @@ func (c *Client) ExportPageAsPDF(ctx context.Context, pageID string, pageTitle s
 	}
 
 	// Validate that we actually got a PDF
-	if !strings.Contains(strings.ToLower(contentType), "pdf") && len(data) < 100 {
+	if !strings.Contains(strings.ToLower(contentType), "pdf") || len(data) < 100 {
 		return nil, "", fmt.Errorf("export page %s: response is not a PDF (content-type: %s, size: %d)",
 			pageID, contentType, len(data))
 	}

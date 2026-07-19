@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"html"
 	"net/http"
 	"os"
 	"regexp"
@@ -334,7 +335,9 @@ func extractAltFromTag(imgTag string) string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // wrapHTMLDocument wraps an HTML body fragment in a full document with CSS.
+// The title is escaped to prevent HTML injection.
 func wrapHTMLDocument(title, bodyHTML string) string {
+	safeTitle := html.EscapeString(title)
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html>
 <head>
@@ -360,7 +363,7 @@ func wrapHTMLDocument(title, bodyHTML string) string {
 <h1>%s</h1>
 %s
 </body>
-</html>`, title, title, bodyHTML)
+</html>`, safeTitle, safeTitle, bodyHTML)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
